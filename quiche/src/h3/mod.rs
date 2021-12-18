@@ -460,6 +460,7 @@ pub struct Config {
     max_field_section_size: Option<u64>,
     qpack_max_table_capacity: Option<u64>,
     qpack_blocked_streams: Option<u64>,
+    enable_webtransport: Option<u64>,
 }
 
 impl Config {
@@ -469,6 +470,7 @@ impl Config {
             max_field_section_size: None,
             qpack_max_table_capacity: None,
             qpack_blocked_streams: None,
+            enable_webtransport: None,
         })
     }
 
@@ -497,6 +499,10 @@ impl Config {
     /// The default value is `0`.
     pub fn set_qpack_blocked_streams(&mut self, v: u64) {
         self.qpack_blocked_streams = Some(v);
+    }
+
+    pub fn set_enable_webtransport(&mut self, v: u64) {
+        self.enable_webtransport = Some(v);
     }
 }
 
@@ -609,6 +615,7 @@ struct ConnectionSettings {
     pub qpack_max_table_capacity: Option<u64>,
     pub qpack_blocked_streams: Option<u64>,
     pub h3_datagram: Option<u64>,
+    pub enable_webtransport: Option<u64>,
     pub raw: Option<Vec<(u64, u64)>>,
 }
 
@@ -657,6 +664,8 @@ impl Connection {
         let initial_uni_stream_id = if is_server { 0x3 } else { 0x2 };
         let h3_datagram = if enable_dgram { Some(1) } else { None };
 
+        info!["h3 datagram: {:?}", h3_datagram];
+
         Ok(Connection {
             is_server,
 
@@ -671,6 +680,7 @@ impl Connection {
                 qpack_max_table_capacity: config.qpack_max_table_capacity,
                 qpack_blocked_streams: config.qpack_blocked_streams,
                 h3_datagram,
+                enable_webtransport: config.enable_webtransport,
                 raw: Default::default(),
             },
 
@@ -679,6 +689,7 @@ impl Connection {
                 qpack_max_table_capacity: None,
                 qpack_blocked_streams: None,
                 h3_datagram: None,
+                enable_webtransport: None,
                 raw: Default::default(),
             },
 
@@ -1581,9 +1592,12 @@ impl Connection {
                 .qpack_max_table_capacity,
             qpack_blocked_streams: self.local_settings.qpack_blocked_streams,
             h3_datagram: self.local_settings.h3_datagram,
+            enable_webtransport: self.local_settings.enable_webtransport,
             grease,
             raw: Default::default(),
         };
+
+        trace!("tx frm SETTINGS stream={} {:?}", conn.trace_id(), frame);
 
         let mut d = [42; 128];
         let mut b = octets::OctetsMut::with_slice(&mut d);
@@ -1918,6 +1932,7 @@ impl Connection {
                 qpack_max_table_capacity,
                 qpack_blocked_streams,
                 h3_datagram,
+                enable_webtransport,
                 raw,
                 ..
             } => {
@@ -1926,6 +1941,7 @@ impl Connection {
                     qpack_max_table_capacity,
                     qpack_blocked_streams,
                     h3_datagram,
+                    enable_webtransport,
                     raw,
                 };
 
@@ -3836,6 +3852,7 @@ mod tests {
             qpack_max_table_capacity: None,
             qpack_blocked_streams: None,
             h3_datagram: Some(1),
+            enable_webtransport: None,
             grease: None,
             raw: Default::default(),
         };

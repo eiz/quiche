@@ -43,6 +43,7 @@ use std::path;
 
 use quiche::ConnectionId;
 
+use quiche::h3::Header;
 use quiche::h3::NameValue;
 
 pub fn stdout_sink(out: String) {
@@ -880,12 +881,11 @@ impl Http3Conn {
         conn: &mut quiche::Connection, dgram_sender: Option<Http3DgramSender>,
         output_sink: Rc<RefCell<dyn FnMut(String)>>,
     ) -> Box<dyn HttpConn> {
+        let mut config = quiche::h3::Config::new().unwrap();
+        config.set_enable_webtransport(1);
         let h_conn = Http3Conn {
-            h3_conn: quiche::h3::Connection::with_transport(
-                conn,
-                &quiche::h3::Config::new().unwrap(),
-            )
-            .unwrap(),
+            h3_conn: quiche::h3::Connection::with_transport(conn, &config)
+                .unwrap(),
             reqs_hdrs_sent: 0,
             reqs_complete: 0,
             largest_processed_request: 0,
@@ -903,7 +903,7 @@ impl Http3Conn {
     /// Builds an HTTP/3 response given a request.
     fn build_h3_response(
         root: &str, index: &str, request: &[quiche::h3::Header],
-    ) -> (Vec<quiche::h3::Header>, Vec<u8>, String) {
+    ) -> (Vec<quiche::h3::Header>, Vec<u8>, String, bool) {
         let mut file_path = path::PathBuf::from(root);
         let mut scheme = "";
         let mut host = "";
@@ -936,7 +936,12 @@ impl Http3Conn {
                 quiche::h3::Header::new(b"server", b"quiche"),
             ];
 
-            return (headers, b"Invalid scheme".to_vec(), priority.to_string());
+            return (
+                headers,
+                b"Invalid scheme".to_vec(),
+                priority.to_string(),
+                false,
+            );
         }
 
         let url = format!("{}://{}{}", scheme, host, path);
@@ -962,7 +967,7 @@ impl Http3Conn {
             priority = &query_priority;
         }
 
-        let (status, body) = match method {
+        let (status, body, is_connect) = match method {
             "GET" => {
                 for c in pathbuf.components() {
                     if let path::Component::Normal(v) = c {
@@ -970,14 +975,17 @@ impl Http3Conn {
                     }
                 }
 
+                info!["Path: {:?}", file_path];
                 match std::fs::read(file_path.as_path()) {
-                    Ok(data) => (200, data),
+                    Ok(data) => (200, data, false),
 
-                    Err(_) => (404, b"Not Found!".to_vec()),
+                    Err(_) => (404, b"Not Found!".to_vec(), false),
                 }
             },
 
-            _ => (405, Vec::new()),
+            "CONNECT" => (200, Vec::new(), true),
+
+            _ => (405, Vec::new(), false),
         };
 
         let mut headers = vec![
@@ -994,7 +1002,7 @@ impl Http3Conn {
                 .push(quiche::h3::Header::new(b"priority", priority.as_bytes()));
         }
 
-        (headers, body, priority.to_string())
+        (headers, body, priority.to_string(), is_connect)
     }
 }
 
@@ -1279,6 +1287,13 @@ impl HttpConn for Http3Conn {
                         stream_id
                     );
 
+                    for header in list.iter() {
+                        let key = std::str::from_utf8(header.name()).unwrap();
+                        let value = std::str::from_utf8(header.value()).unwrap();
+                        info!["header {:?} = {:?}", key, value];
+                        //
+                    }
+
                     self.largest_processed_request =
                         std::cmp::max(self.largest_processed_request, stream_id);
 
@@ -1289,7 +1304,7 @@ impl HttpConn for Http3Conn {
                     conn.stream_shutdown(stream_id, quiche::Shutdown::Read, 0)
                         .unwrap();
 
-                    let (headers, body, priority) =
+                    let (headers, body, priority, is_connect) =
                         Http3Conn::build_h3_response(root, index, &list);
 
                     match self.h3_conn.send_response_with_priority(
@@ -1319,10 +1334,12 @@ impl HttpConn for Http3Conn {
                         },
                     }
 
-                    let written = match self
-                        .h3_conn
-                        .send_body(conn, stream_id, &body, true)
-                    {
+                    let written = match self.h3_conn.send_body(
+                        conn,
+                        stream_id,
+                        &body,
+                        !is_connect,
+                    ) {
                         Ok(v) => v,
 
                         Err(quiche::h3::Error::Done) => 0,
