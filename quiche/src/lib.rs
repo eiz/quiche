@@ -4247,6 +4247,7 @@ impl Connection {
         };
 
         if buf.len() > max_payload_len {
+            error!["buffer too short: {:?} > {:?}", buf.len(), max_payload_len];
             return Err(Error::BufferTooShort);
         }
 

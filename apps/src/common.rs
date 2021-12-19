@@ -1388,6 +1388,10 @@ impl HttpConn for Http3Conn {
                             len,
                             buf[flow_id_len..len].to_vec()
                         );
+
+                        self.h3_conn
+                            .send_dgram(conn, flow_id, &buf[flow_id_len..len])
+                            .unwrap();
                     }
                 },
 
