@@ -277,10 +277,11 @@
 //! [`send_response()`]: struct.Connection.html#method.send_response
 //! [`send_body()`]: struct.Connection.html#method.send_body
 
-use std::collections::HashMap;
+use std::collections::BTreeMap;
 use std::collections::VecDeque;
 
 use crate::octets;
+use crate::shitty_map::ShittyMap;
 
 /// List of ALPN tokens of supported HTTP/3 versions.
 ///
@@ -634,7 +635,7 @@ pub struct Connection {
     next_request_stream_id: u64,
     next_uni_stream_id: u64,
 
-    streams: HashMap<u64, stream::Stream>,
+    streams: ShittyMap<u64, stream::Stream>,
 
     local_settings: ConnectionSettings,
     peer_settings: ConnectionSettings,
@@ -658,6 +659,8 @@ pub struct Connection {
     peer_goaway_id: Option<u64>,
 
     dgram_event_triggered: bool,
+
+    qpack_buf: [u8; 4096],
 }
 
 impl Connection {
@@ -676,7 +679,7 @@ impl Connection {
 
             next_uni_stream_id: initial_uni_stream_id,
 
-            streams: HashMap::new(),
+            streams: ShittyMap::new(),
 
             local_settings: ConnectionSettings {
                 max_field_section_size: config.max_field_section_size,
@@ -722,6 +725,7 @@ impl Connection {
             peer_goaway_id: None,
 
             dgram_event_triggered: false,
+            qpack_buf: [0; 4096],
         })
     }
 
@@ -1654,8 +1658,7 @@ impl Connection {
         &mut self, conn: &mut super::Connection, stream_id: u64, polling: bool,
     ) -> Result<(u64, Event)> {
         self.streams
-            .entry(stream_id)
-            .or_insert_with(|| stream::Stream::new(stream_id, false));
+            .get_or_create(stream_id, || stream::Stream::new(stream_id, false));
 
         // We need to get a fresh reference to the stream for each
         // iteration, to avoid borrowing `self` for the entire duration
@@ -1870,11 +1873,9 @@ impl Connection {
                 },
 
                 stream::State::QpackInstruction => {
-                    let mut d = [0; 4096];
-
                     // Read data from the stream and discard immediately.
                     loop {
-                        conn.stream_recv(stream_id, &mut d)?;
+                        conn.stream_recv(stream_id, &mut self.qpack_buf)?;
                     }
                 },
 

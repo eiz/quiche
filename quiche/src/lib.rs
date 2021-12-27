@@ -321,6 +321,7 @@ use std::pin::Pin;
 use std::str::FromStr;
 
 use std::collections::VecDeque;
+use std::time::Instant;
 
 /// The current QUIC wire version.
 pub const PROTOCOL_VERSION: u32 = PROTOCOL_VERSION_V1;
@@ -2500,11 +2501,15 @@ impl Connection {
             left = cmp::min(left, self.max_send_bytes);
         }
 
+        let now = time::Instant::now();
+
         // Generate coalesced packets.
         while left > 0 {
-            let (ty, written) = match self
-                .send_single(&mut out[done..done + left], has_initial)
-            {
+            let (ty, written) = match self.send_single(
+                &mut out[done..done + left],
+                has_initial,
+                now,
+            ) {
                 Ok(v) => v,
 
                 Err(Error::BufferTooShort) | Err(Error::Done) => break,
@@ -2561,10 +2566,8 @@ impl Connection {
     }
 
     fn send_single(
-        &mut self, out: &mut [u8], has_initial: bool,
+        &mut self, out: &mut [u8], has_initial: bool, now: Instant,
     ) -> Result<(packet::Type, usize)> {
-        let now = time::Instant::now();
-
         if out.is_empty() {
             return Err(Error::BufferTooShort);
         }
@@ -11168,5 +11171,6 @@ mod packet;
 mod rand;
 mod ranges;
 mod recovery;
+mod shitty_map;
 mod stream;
 mod tls;

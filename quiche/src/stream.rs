@@ -26,6 +26,7 @@
 
 use std::cmp;
 
+use std::collections::btree_map;
 use std::sync::Arc;
 
 use std::collections::hash_map;
@@ -43,6 +44,7 @@ use crate::Result;
 
 use crate::flowcontrol;
 use crate::ranges;
+use crate::shitty_map::ShittyMap;
 
 const DEFAULT_URGENCY: u8 = 127;
 
@@ -62,7 +64,7 @@ pub const MAX_STREAM_WINDOW: u64 = 16 * 1024 * 1024;
 #[derive(Default)]
 pub struct StreamMap {
     /// Map of streams indexed by stream ID.
-    streams: HashMap<u64, Stream>,
+    streams: ShittyMap<u64, Stream>,
 
     /// Set of streams that were completed and garbage collected.
     ///
@@ -189,93 +191,93 @@ impl StreamMap {
         &mut self, id: u64, local_params: &crate::TransportParams,
         peer_params: &crate::TransportParams, local: bool, is_server: bool,
     ) -> Result<&mut Stream> {
-        let stream = match self.streams.entry(id) {
-            hash_map::Entry::Vacant(v) => {
-                // Stream has already been closed and garbage collected.
-                if self.collected.contains(&id) {
-                    return Err(Error::Done);
-                }
+        let Self {
+            streams,
+            collected,
+            local_opened_streams_bidi,
+            peer_max_streams_bidi,
+            local_opened_streams_uni,
+            peer_max_streams_uni,
+            peer_opened_streams_bidi,
+            local_max_streams_bidi,
+            peer_opened_streams_uni,
+            local_max_streams_uni,
+            max_stream_window,
+            ..
+        } = self;
+        let stream = streams.get_or_create_result(id, || {
+            // Stream has already been closed and garbage collected.
+            if collected.contains(&id) {
+                return Err(Error::Done);
+            }
 
-                if local != is_local(id, is_server) {
-                    return Err(Error::InvalidStreamState(id));
-                }
+            if local != is_local(id, is_server) {
+                return Err(Error::InvalidStreamState(id));
+            }
 
-                let (max_rx_data, max_tx_data) = match (local, is_bidi(id)) {
-                    // Locally-initiated bidirectional stream.
-                    (true, true) => (
-                        local_params.initial_max_stream_data_bidi_local,
-                        peer_params.initial_max_stream_data_bidi_remote,
-                    ),
+            let (max_rx_data, max_tx_data) = match (local, is_bidi(id)) {
+                // Locally-initiated bidirectional stream.
+                (true, true) => (
+                    local_params.initial_max_stream_data_bidi_local,
+                    peer_params.initial_max_stream_data_bidi_remote,
+                ),
 
-                    // Locally-initiated unidirectional stream.
-                    (true, false) => (0, peer_params.initial_max_stream_data_uni),
+                // Locally-initiated unidirectional stream.
+                (true, false) => (0, peer_params.initial_max_stream_data_uni),
 
-                    // Remotely-initiated bidirectional stream.
-                    (false, true) => (
-                        local_params.initial_max_stream_data_bidi_remote,
-                        peer_params.initial_max_stream_data_bidi_local,
-                    ),
+                // Remotely-initiated bidirectional stream.
+                (false, true) => (
+                    local_params.initial_max_stream_data_bidi_remote,
+                    peer_params.initial_max_stream_data_bidi_local,
+                ),
 
-                    // Remotely-initiated unidirectional stream.
-                    (false, false) =>
-                        (local_params.initial_max_stream_data_uni, 0),
-                };
+                // Remotely-initiated unidirectional stream.
+                (false, false) => (local_params.initial_max_stream_data_uni, 0),
+            };
 
-                // Enforce stream count limits.
-                match (is_local(id, is_server), is_bidi(id)) {
-                    (true, true) => {
-                        if self.local_opened_streams_bidi >=
-                            self.peer_max_streams_bidi
-                        {
-                            return Err(Error::StreamLimit);
-                        }
+            // Enforce stream count limits.
+            match (is_local(id, is_server), is_bidi(id)) {
+                (true, true) => {
+                    if local_opened_streams_bidi >= peer_max_streams_bidi {
+                        return Err(Error::StreamLimit);
+                    }
 
-                        self.local_opened_streams_bidi += 1;
-                    },
+                    *local_opened_streams_bidi += 1;
+                },
 
-                    (true, false) => {
-                        if self.local_opened_streams_uni >=
-                            self.peer_max_streams_uni
-                        {
-                            return Err(Error::StreamLimit);
-                        }
+                (true, false) => {
+                    if local_opened_streams_uni >= peer_max_streams_uni {
+                        return Err(Error::StreamLimit);
+                    }
 
-                        self.local_opened_streams_uni += 1;
-                    },
+                    *local_opened_streams_uni += 1;
+                },
 
-                    (false, true) => {
-                        if self.peer_opened_streams_bidi >=
-                            self.local_max_streams_bidi
-                        {
-                            return Err(Error::StreamLimit);
-                        }
+                (false, true) => {
+                    if peer_opened_streams_bidi >= local_max_streams_bidi {
+                        return Err(Error::StreamLimit);
+                    }
 
-                        self.peer_opened_streams_bidi += 1;
-                    },
+                    *peer_opened_streams_bidi += 1;
+                },
 
-                    (false, false) => {
-                        if self.peer_opened_streams_uni >=
-                            self.local_max_streams_uni
-                        {
-                            return Err(Error::StreamLimit);
-                        }
+                (false, false) => {
+                    if peer_opened_streams_uni >= local_max_streams_uni {
+                        return Err(Error::StreamLimit);
+                    }
 
-                        self.peer_opened_streams_uni += 1;
-                    },
-                };
+                    *peer_opened_streams_uni += 1;
+                },
+            };
 
-                let s = Stream::new(
-                    max_rx_data,
-                    max_tx_data,
-                    is_bidi(id),
-                    local,
-                    self.max_stream_window,
-                );
-                v.insert(s)
-            },
-
-            hash_map::Entry::Occupied(v) => v.into_mut(),
-        };
+            Ok(Stream::new(
+                max_rx_data,
+                max_tx_data,
+                is_bidi(id),
+                local,
+                *max_stream_window,
+            ))
+        })?;
 
         // Stream might already be writable due to initial flow control limits.
         if stream.is_writable() {

@@ -55,6 +55,7 @@ ring = "0.16"
 lazy_static = "1"
 boring-sys = { version = "1.0.2", optional = true }
 qlog = { version = "0.5", path = "../qlog", optional = true }
+smallvec = "1.7"
 
 [target."cfg(windows)".dependencies]
 winapi = { version = "0.3", features = ["wincrypt"] }
