@@ -1124,8 +1124,10 @@ impl std::fmt::Debug for Frame {
             } => {
                 write!(
                     f,
-                    "CONNECTION_CLOSE err={:x} frame={:x} reason={:x?}",
-                    error_code, frame_type, reason
+                    "CONNECTION_CLOSE err={:x} frame={:x} reason={:?}",
+                    error_code,
+                    frame_type,
+                    std::str::from_utf8(reason)
                 )?;
             },
 
@@ -1142,7 +1144,12 @@ impl std::fmt::Debug for Frame {
             },
 
             Frame::Datagram { data } => {
-                write!(f, "DATAGRAM len={}", data.len())?;
+                write!(
+                    f,
+                    "DATAGRAM len={} text={:?}",
+                    data.len(),
+                    std::str::from_utf8(data)
+                )?;
             },
 
             Frame::DatagramHeader { length } => {

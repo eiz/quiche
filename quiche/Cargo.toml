@@ -45,7 +45,7 @@ ffi = []
 no-default-features = true
 
 [build-dependencies]
-cmake = { path = "/Users/mackstraight/code/cmake-rs" }
+cmake = "0.1"
 
 [dependencies]
 log = { version = "0.4", features = ["std"] }

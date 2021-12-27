@@ -2672,6 +2672,11 @@ impl Connection {
         let mut left = b.cap();
 
         // Limit output packet size by congestion window size.
+        trace![
+            "cwnd_available {:?} {:?}",
+            self.recovery.cwnd_available(),
+            self.recovery.cwnd()
+        ];
         left = cmp::min(left, self.recovery.cwnd_available());
 
         let pn = self.pkt_num_spaces[epoch].next_pkt_num;

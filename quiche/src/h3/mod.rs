@@ -501,6 +501,9 @@ impl Config {
         self.qpack_blocked_streams = Some(v);
     }
 
+    /// Sets the `SETTINGS_ENABLE_WEBTRANSPORT` setting.
+    ///
+    /// The default value is `0`.
     pub fn set_enable_webtransport(&mut self, v: u64) {
         self.enable_webtransport = Some(v);
     }
