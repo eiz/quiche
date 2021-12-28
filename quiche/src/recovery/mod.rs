@@ -44,6 +44,7 @@ use crate::ranges;
 
 #[cfg(feature = "qlog")]
 use qlog::events::EventData;
+use smallvec::SmallVec;
 
 // Loss Recovery
 const INITIAL_PACKET_THRESHOLD: u64 = 3;
@@ -100,9 +101,9 @@ pub struct Recovery {
 
     sent: [VecDeque<Sent>; packet::EPOCH_COUNT],
 
-    pub lost: [Vec<frame::Frame>; packet::EPOCH_COUNT],
+    pub lost: [SmallVec<[frame::Frame; 8]>; packet::EPOCH_COUNT],
 
-    pub acked: [Vec<frame::Frame>; packet::EPOCH_COUNT],
+    pub acked: [SmallVec<[frame::Frame; 8]>; packet::EPOCH_COUNT],
 
     pub lost_count: usize,
 
@@ -191,9 +192,9 @@ impl Recovery {
 
             sent: [VecDeque::new(), VecDeque::new(), VecDeque::new()],
 
-            lost: [Vec::new(), Vec::new(), Vec::new()],
+            lost: [SmallVec::new(), SmallVec::new(), SmallVec::new()],
 
-            acked: [Vec::new(), Vec::new(), Vec::new()],
+            acked: [SmallVec::new(), SmallVec::new(), SmallVec::new()],
 
             lost_count: 0,
             lost_spurious_count: 0,
@@ -550,7 +551,10 @@ impl Recovery {
         // HANDSHAKE_DONE and MAX_DATA / MAX_STREAM_DATA as well, in addition
         // to CRYPTO and STREAM, if the original packet carried them.
         for unacked in unacked_iter {
-            self.lost[epoch].extend_from_slice(&unacked.frames);
+            for frame in &unacked.frames {
+                self.lost[epoch].push(frame.clone());
+            }
+            // self.lost[epoch].extend_from_slice(&unacked.frames);
         }
 
         self.set_loss_detection_timer(handshake_status, now);
@@ -1063,7 +1067,7 @@ impl std::fmt::Debug for Recovery {
 pub struct Sent {
     pub pkt_num: u64,
 
-    pub frames: Vec<frame::Frame>,
+    pub frames: SmallVec<[frame::Frame; 8]>,
 
     pub time_sent: Instant,
 

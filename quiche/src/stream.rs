@@ -26,7 +26,6 @@
 
 use std::cmp;
 
-use std::collections::btree_map;
 use std::sync::Arc;
 
 use std::collections::hash_map;

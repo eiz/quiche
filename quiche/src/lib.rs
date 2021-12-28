@@ -311,6 +311,7 @@ use qlog::events::EventImportance;
 use qlog::events::EventType;
 #[cfg(feature = "qlog")]
 use qlog::events::RawInfo;
+use smallvec::SmallVec;
 
 use std::cmp;
 use std::time;
@@ -2446,7 +2447,9 @@ impl Connection {
     /// }
     /// # Ok::<(), quiche::Error>(())
     /// ```
-    pub fn send(&mut self, out: &mut [u8]) -> Result<(usize, SendInfo)> {
+    pub fn send(
+        &mut self, out: &mut [u8], now: Instant,
+    ) -> Result<(usize, SendInfo)> {
         if out.is_empty() {
             return Err(Error::BufferTooShort);
         }
@@ -2500,8 +2503,6 @@ impl Connection {
         if !self.verified_peer_address && self.is_server {
             left = cmp::min(left, self.max_send_bytes);
         }
-
-        let now = time::Instant::now();
 
         // Generate coalesced packets.
         while left > 0 {
@@ -2675,11 +2676,6 @@ impl Connection {
         let mut left = b.cap();
 
         // Limit output packet size by congestion window size.
-        trace![
-            "cwnd_available {:?} {:?}",
-            self.recovery.cwnd_available(),
-            self.recovery.cwnd()
-        ];
         left = cmp::min(left, self.recovery.cwnd_available());
 
         let pn = self.pkt_num_spaces[epoch].next_pkt_num;
@@ -2748,7 +2744,7 @@ impl Connection {
             return Err(Error::Done);
         }
 
-        let mut frames: Vec<frame::Frame> = Vec::new();
+        let mut frames: SmallVec<[frame::Frame; 8]> = SmallVec::new();
 
         let mut ack_eliciting = false;
         let mut in_flight = false;
@@ -3159,6 +3155,8 @@ impl Connection {
                                     in_flight = true;
                                     dgram_emitted = true;
                                 }
+
+                                break; // NOCHECKIN(eiz): ya.
                             },
 
                             None => continue,
@@ -4383,9 +4381,7 @@ impl Connection {
     /// Processes a timeout event.
     ///
     /// If no timeout has occurred it does nothing.
-    pub fn on_timeout(&mut self) {
-        let now = time::Instant::now();
-
+    pub fn on_timeout(&mut self, now: Instant) {
         if let Some(draining_timer) = self.draining_timer {
             if draining_timer <= now {
                 trace!("{} draining timeout expired", self.trace_id);
@@ -6178,7 +6174,7 @@ pub mod testing {
 
         let mut off = 0;
 
-        match conn.send(&mut buf[off..]) {
+        match conn.send(&mut buf[off..], Instant::now()) {
             Ok((write, _)) => off += write,
 
             Err(Error::Done) => (),
@@ -6209,7 +6205,7 @@ pub mod testing {
         loop {
             let mut out = vec![0u8; 65535];
 
-            match conn.send(&mut out) {
+            match conn.send(&mut out, Instant::now()) {
                 Ok((written, _)) => out.truncate(written),
 
                 Err(Error::Done) => break,

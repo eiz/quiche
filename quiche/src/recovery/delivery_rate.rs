@@ -190,7 +190,7 @@ mod tests {
 
         let mut pkt_1 = Sent {
             pkt_num: 0,
-            frames: vec![],
+            frames: smallvec::smallvec![],
             time_sent: Instant::now(),
             time_acked: None,
             time_lost: None,
@@ -214,7 +214,7 @@ mod tests {
 
         let mut pkt_2 = Sent {
             pkt_num: 1,
-            frames: vec![],
+            frames: smallvec::vec![],
             time_sent: Instant::now(),
             time_acked: None,
             time_lost: None,

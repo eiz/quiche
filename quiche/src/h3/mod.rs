@@ -277,7 +277,6 @@
 //! [`send_response()`]: struct.Connection.html#method.send_response
 //! [`send_body()`]: struct.Connection.html#method.send_body
 
-use std::collections::BTreeMap;
 use std::collections::VecDeque;
 
 use crate::octets;
