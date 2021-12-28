@@ -1107,15 +1107,24 @@ impl Connection {
     pub fn send_dgram(
         &mut self, conn: &mut super::Connection, flow_id: u64, buf: &[u8],
     ) -> Result<()> {
+        if conn.dgram_send_queue.is_full() {
+            return Err(Error::Done);
+        }
+
         let len = octets::varint_len(flow_id) + buf.len();
-        let mut d = vec![0; len as usize];
+        let mut d = conn.dgram_free_list.take(len as usize);
         let mut b = octets::OctetsMut::with_slice(&mut d);
 
-        b.put_varint(flow_id)?;
-        b.put_bytes(buf)?;
+        if let Err(e) = b.put_varint(flow_id) {
+            conn.dgram_free_list.free(d);
+            return Err(e.into());
+        }
+        if let Err(e) = b.put_bytes(buf) {
+            conn.dgram_free_list.free(d);
+            return Err(e.into());
+        }
 
         conn.dgram_send_vec(d)?;
-
         Ok(())
     }
 

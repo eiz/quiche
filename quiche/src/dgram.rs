@@ -57,6 +57,19 @@ impl DatagramQueue {
         Ok(())
     }
 
+    pub fn try_push(
+        &mut self, data: Vec<u8>,
+    ) -> std::result::Result<(), (crate::Error, Vec<u8>)> {
+        if self.is_full() {
+            return Err((Error::Done, data));
+        }
+
+        self.queue_bytes_size += data.len();
+        self.queue.push_back(data);
+
+        Ok(())
+    }
+
     pub fn peek_front_len(&self) -> Option<usize> {
         self.queue.front().map(|d| d.len())
     }

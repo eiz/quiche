@@ -595,6 +595,7 @@ pub struct Config {
 
     max_connection_window: u64,
     max_stream_window: u64,
+    dgram_free_list: BufferCache,
 }
 
 // See https://quicwg.org/base-drafts/rfc9000.html#section-15
@@ -634,6 +635,7 @@ impl Config {
 
             max_connection_window: MAX_CONNECTION_WINDOW,
             max_stream_window: stream::MAX_STREAM_WINDOW,
+            dgram_free_list: BufferCache::new(0, 0),
         })
     }
 
@@ -973,6 +975,10 @@ impl Config {
     pub fn set_max_stream_window(&mut self, v: u64) {
         self.max_stream_window = v;
     }
+
+    pub fn set_dgram_free_list(&mut self, v: BufferCache) {
+        self.dgram_free_list = v;
+    }
 }
 
 /// A QUIC connection.
@@ -1155,6 +1161,7 @@ pub struct Connection {
     /// DATAGRAM queues.
     dgram_recv_queue: dgram::DatagramQueue,
     dgram_send_queue: dgram::DatagramQueue,
+    dgram_free_list: BufferCache,
 
     /// Whether to emit DATAGRAM frames in the next packet.
     emit_dgram: bool,
@@ -1558,6 +1565,8 @@ impl Connection {
             dgram_send_queue: dgram::DatagramQueue::new(
                 config.dgram_send_max_queue_len,
             ),
+
+            dgram_free_list: config.dgram_free_list.clone(),
 
             emit_dgram: true,
         });
@@ -3156,6 +3165,7 @@ impl Connection {
                                     dgram_emitted = true;
                                 }
 
+                                self.dgram_free_list.free(data);
                                 break; // NOCHECKIN(eiz): ya.
                             },
 
@@ -4249,15 +4259,22 @@ impl Connection {
         let max_payload_len = match self.dgram_max_writable_len() {
             Some(v) => v,
 
-            None => return Err(Error::InvalidState),
+            None => {
+                self.dgram_free_list.free(buf);
+                return Err(Error::InvalidState);
+            },
         };
 
         if buf.len() > max_payload_len {
             error!["buffer too short: {:?} > {:?}", buf.len(), max_payload_len];
+            self.dgram_free_list.free(buf);
             return Err(Error::BufferTooShort);
         }
 
-        self.dgram_send_queue.push(buf)?;
+        if let Err((e, buf)) = self.dgram_send_queue.try_push(buf) {
+            self.dgram_free_list.free(buf);
+            return Err(e);
+        }
 
         if self.dgram_send_queue.byte_size() > self.recovery.cwnd_available() {
             self.recovery.update_app_limited(false);
@@ -11146,6 +11163,7 @@ mod tests {
     }
 }
 
+use crate::buffer_cache::BufferCache;
 pub use crate::packet::ConnectionId;
 pub use crate::packet::Header;
 pub use crate::packet::Type;
@@ -11154,6 +11172,7 @@ pub use crate::recovery::CongestionControlAlgorithm;
 
 pub use crate::stream::StreamIter;
 
+pub mod buffer_cache;
 mod crypto;
 mod dgram;
 #[cfg(feature = "ffi")]
