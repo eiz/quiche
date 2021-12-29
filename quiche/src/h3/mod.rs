@@ -669,8 +669,6 @@ impl Connection {
         let initial_uni_stream_id = if is_server { 0x3 } else { 0x2 };
         let h3_datagram = if enable_dgram { Some(1) } else { None };
 
-        info!["h3 datagram: {:?}", h3_datagram];
-
         Ok(Connection {
             is_server,
 

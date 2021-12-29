@@ -3166,7 +3166,6 @@ impl Connection {
                                 }
 
                                 self.dgram_free_list.free(data);
-                                break; // NOCHECKIN(eiz): ya.
                             },
 
                             None => continue,
