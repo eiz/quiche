@@ -24,6 +24,8 @@
 // NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS
 // SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
+use std::cmp;
+use std::cmp::Ordering;
 use std::time;
 
 use ring::aead;
@@ -235,6 +237,39 @@ impl<'a> std::fmt::Debug for ConnectionId<'a> {
         }
 
         Ok(())
+    }
+}
+
+fn compare(a: &[u8], b: &[u8]) -> cmp::Ordering {
+    for (ai, bi) in a.iter().zip(b.iter()) {
+        match ai.cmp(&bi) {
+            Ordering::Equal => continue,
+            ord => return ord,
+        }
+    }
+
+    // if every single element was equal, compare length
+    a.len().cmp(&b.len())
+}
+
+impl<'a> Ord for ConnectionId<'a> {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        match (&self.0, &other.0) {
+            (ConnectionIdInner::Vec(v1), ConnectionIdInner::Vec(v2)) =>
+                compare(&v1, &v2),
+            (ConnectionIdInner::Vec(v1), ConnectionIdInner::Ref(s2)) =>
+                compare(&v1, s2),
+            (ConnectionIdInner::Ref(s1), ConnectionIdInner::Vec(v2)) =>
+                compare(s1, &v2),
+            (ConnectionIdInner::Ref(s1), ConnectionIdInner::Ref(s2)) =>
+                compare(s1, s2),
+        }
+    }
+}
+
+impl<'a> PartialOrd for ConnectionId<'a> {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
     }
 }
 

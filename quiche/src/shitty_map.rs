@@ -1,23 +1,34 @@
 use std::borrow::Borrow;
 use std::cmp::Ordering;
+use std::collections::btree_map::Keys;
 use std::collections::BTreeMap;
 use std::convert::Infallible;
 use std::mem;
+use std::slice::Iter;
 
 use smallvec::smallvec;
 use smallvec::SmallVec;
 
+/// documentation lol
+pub type ShittySet<T> = ShittyMap<T, ()>;
+
+/// documentation lol
 pub enum ShittyMap<K, V> {
+    /// documentation lol
     Empty,
+    /// documentation lol
     Vec(SmallVec<[(K, V); 10]>),
+    /// documentation lol
     Map(BTreeMap<K, V>),
 }
 
 impl<K, V> ShittyMap<K, V> {
+    /// documentation lol
     pub fn new() -> Self {
         Self::Empty
     }
 
+    /// documentation lol
     pub fn insert(&mut self, key: K, value: V) -> Option<V>
     where
         K: Ord,
@@ -59,6 +70,7 @@ impl<K, V> ShittyMap<K, V> {
         }
     }
 
+    /// documentation lol
     pub fn remove<Q: ?Sized>(&mut self, key: &Q) -> Option<V>
     where
         K: Borrow<Q> + Ord,
@@ -86,6 +98,7 @@ impl<K, V> ShittyMap<K, V> {
         }
     }
 
+    /// documentation lol
     pub fn contains_key<Q: ?Sized>(&self, key: &Q) -> bool
     where
         K: Borrow<Q> + Ord,
@@ -94,6 +107,7 @@ impl<K, V> ShittyMap<K, V> {
         self.get(key).is_some()
     }
 
+    /// documentation lol
     pub fn get<Q: ?Sized>(&self, key: &Q) -> Option<&V>
     where
         K: Borrow<Q> + Ord,
@@ -114,6 +128,7 @@ impl<K, V> ShittyMap<K, V> {
         }
     }
 
+    /// documentation lol
     pub fn get_mut<Q: ?Sized>(&mut self, key: &Q) -> Option<&mut V>
     where
         K: Borrow<Q> + Ord,
@@ -134,6 +149,7 @@ impl<K, V> ShittyMap<K, V> {
         }
     }
 
+    /// documentation lol
     pub fn get_or_create<F>(&mut self, key: K, val_fn: F) -> &mut V
     where
         F: FnOnce() -> V,
@@ -143,6 +159,7 @@ impl<K, V> ShittyMap<K, V> {
             .unwrap()
     }
 
+    /// documentation lol
     pub fn get_or_create_result<F, E>(
         &mut self, key: K, val_fn: F,
     ) -> Result<&mut V, E>
@@ -210,10 +227,50 @@ impl<K, V> ShittyMap<K, V> {
             _ => unreachable!(),
         }
     }
+
+    /// documentation lol
+    pub fn len(&self) -> usize {
+        match self {
+            ShittyMap::Empty => 0,
+            ShittyMap::Vec(v) => v.len(),
+            ShittyMap::Map(m) => m.len(),
+        }
+    }
+
+    /// documentation lol
+    pub fn keys(&self) -> ShittyKeys<'_, K, V> {
+        match self {
+            Self::Empty => ShittyKeys::Empty,
+            Self::Vec(v) => ShittyKeys::Vec(v.iter()),
+            Self::Map(m) => ShittyKeys::Map(m.keys()),
+        }
+    }
 }
 
 impl<K, V> Default for ShittyMap<K, V> {
     fn default() -> Self {
         Self::Empty
+    }
+}
+
+/// documentation lol
+pub enum ShittyKeys<'a, K, V> {
+    /// documentation lol
+    Empty,
+    /// documentation lol
+    Vec(Iter<'a, (K, V)>),
+    /// documentation lol
+    Map(Keys<'a, K, V>),
+}
+
+impl<'a, K, V> Iterator for ShittyKeys<'a, K, V> {
+    type Item = &'a K;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        match self {
+            ShittyKeys::Empty => None,
+            ShittyKeys::Vec(v) => v.next().map(|(k, _)| k),
+            ShittyKeys::Map(m) => m.next(),
+        }
     }
 }

@@ -4394,6 +4394,43 @@ impl Connection {
         None
     }
 
+    /// Returns the amount of time until the next timeout event.
+    ///
+    /// Once the given duration has elapsed, the [`on_timeout()`] method should
+    /// be called. A timeout of `None` means that the timer should be disarmed.
+    ///
+    /// [`on_timeout()`]: struct.Connection.html#method.on_timeout
+    pub fn timeout_at(&self, now: Instant) -> Option<time::Duration> {
+        if self.is_closed() {
+            return None;
+        }
+
+        let timeout = if self.is_draining() {
+            // Draining timer takes precedence over all other timers. If it is
+            // set it means the connection is closing so there's no point in
+            // processing the other timers.
+            self.draining_timer
+        } else {
+            // Use the lowest timer value (i.e. "sooner") among idle and loss
+            // detection timers. If they are both unset (i.e. `None`) then the
+            // result is `None`, but if at least one of them is set then a
+            // `Some(...)` value is returned.
+            let timers = [self.idle_timer, self.recovery.loss_detection_timer()];
+
+            timers.iter().filter_map(|&x| x).min()
+        };
+
+        if let Some(timeout) = timeout {
+            if timeout <= now {
+                return Some(time::Duration::ZERO);
+            }
+
+            return Some(timeout.duration_since(now));
+        }
+
+        None
+    }
+
     /// Processes a timeout event.
     ///
     /// If no timeout has occurred it does nothing.
@@ -11185,6 +11222,6 @@ mod packet;
 mod rand;
 mod ranges;
 mod recovery;
-mod shitty_map;
+pub mod shitty_map;
 mod stream;
 mod tls;
