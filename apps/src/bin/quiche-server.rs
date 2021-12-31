@@ -99,6 +99,7 @@ fn main() {
 
     config.set_max_connection_window(conn_args.max_window);
     config.set_max_stream_window(conn_args.max_stream_window);
+    config.enable_dgram(true, 1000, 1000);
 
     let mut keylog = None;
 

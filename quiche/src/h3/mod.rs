@@ -277,10 +277,10 @@
 //! [`send_response()`]: struct.Connection.html#method.send_response
 //! [`send_body()`]: struct.Connection.html#method.send_body
 
-use std::collections::HashMap;
 use std::collections::VecDeque;
 
 use crate::octets;
+use crate::shitty_map::ShittyMap;
 
 /// List of ALPN tokens of supported HTTP/3 versions.
 ///
@@ -460,6 +460,7 @@ pub struct Config {
     max_field_section_size: Option<u64>,
     qpack_max_table_capacity: Option<u64>,
     qpack_blocked_streams: Option<u64>,
+    enable_webtransport: Option<u64>,
 }
 
 impl Config {
@@ -469,6 +470,7 @@ impl Config {
             max_field_section_size: None,
             qpack_max_table_capacity: None,
             qpack_blocked_streams: None,
+            enable_webtransport: None,
         })
     }
 
@@ -497,6 +499,13 @@ impl Config {
     /// The default value is `0`.
     pub fn set_qpack_blocked_streams(&mut self, v: u64) {
         self.qpack_blocked_streams = Some(v);
+    }
+
+    /// Sets the `SETTINGS_ENABLE_WEBTRANSPORT` setting.
+    ///
+    /// The default value is `0`.
+    pub fn set_enable_webtransport(&mut self, v: u64) {
+        self.enable_webtransport = Some(v);
     }
 }
 
@@ -609,6 +618,7 @@ struct ConnectionSettings {
     pub qpack_max_table_capacity: Option<u64>,
     pub qpack_blocked_streams: Option<u64>,
     pub h3_datagram: Option<u64>,
+    pub enable_webtransport: Option<u64>,
     pub raw: Option<Vec<(u64, u64)>>,
 }
 
@@ -624,7 +634,7 @@ pub struct Connection {
     next_request_stream_id: u64,
     next_uni_stream_id: u64,
 
-    streams: HashMap<u64, stream::Stream>,
+    streams: ShittyMap<u64, stream::Stream>,
 
     local_settings: ConnectionSettings,
     peer_settings: ConnectionSettings,
@@ -648,6 +658,8 @@ pub struct Connection {
     peer_goaway_id: Option<u64>,
 
     dgram_event_triggered: bool,
+
+    qpack_buf: [u8; 4096],
 }
 
 impl Connection {
@@ -664,13 +676,14 @@ impl Connection {
 
             next_uni_stream_id: initial_uni_stream_id,
 
-            streams: HashMap::new(),
+            streams: ShittyMap::new(),
 
             local_settings: ConnectionSettings {
                 max_field_section_size: config.max_field_section_size,
                 qpack_max_table_capacity: config.qpack_max_table_capacity,
                 qpack_blocked_streams: config.qpack_blocked_streams,
                 h3_datagram,
+                enable_webtransport: config.enable_webtransport,
                 raw: Default::default(),
             },
 
@@ -679,6 +692,7 @@ impl Connection {
                 qpack_max_table_capacity: None,
                 qpack_blocked_streams: None,
                 h3_datagram: None,
+                enable_webtransport: None,
                 raw: Default::default(),
             },
 
@@ -708,6 +722,7 @@ impl Connection {
             peer_goaway_id: None,
 
             dgram_event_triggered: false,
+            qpack_buf: [0; 4096],
         })
     }
 
@@ -1090,15 +1105,24 @@ impl Connection {
     pub fn send_dgram(
         &mut self, conn: &mut super::Connection, flow_id: u64, buf: &[u8],
     ) -> Result<()> {
+        if conn.dgram_send_queue.is_full() {
+            return Err(Error::Done);
+        }
+
         let len = octets::varint_len(flow_id) + buf.len();
-        let mut d = vec![0; len as usize];
+        let mut d = conn.dgram_free_list.take(len as usize);
         let mut b = octets::OctetsMut::with_slice(&mut d);
 
-        b.put_varint(flow_id)?;
-        b.put_bytes(buf)?;
+        if let Err(e) = b.put_varint(flow_id) {
+            conn.dgram_free_list.free(d);
+            return Err(e.into());
+        }
+        if let Err(e) = b.put_bytes(buf) {
+            conn.dgram_free_list.free(d);
+            return Err(e.into());
+        }
 
         conn.dgram_send_vec(d)?;
-
         Ok(())
     }
 
@@ -1581,9 +1605,12 @@ impl Connection {
                 .qpack_max_table_capacity,
             qpack_blocked_streams: self.local_settings.qpack_blocked_streams,
             h3_datagram: self.local_settings.h3_datagram,
+            enable_webtransport: self.local_settings.enable_webtransport,
             grease,
             raw: Default::default(),
         };
+
+        trace!("tx frm SETTINGS stream={} {:?}", conn.trace_id(), frame);
 
         let mut d = [42; 128];
         let mut b = octets::OctetsMut::with_slice(&mut d);
@@ -1637,8 +1664,7 @@ impl Connection {
         &mut self, conn: &mut super::Connection, stream_id: u64, polling: bool,
     ) -> Result<(u64, Event)> {
         self.streams
-            .entry(stream_id)
-            .or_insert_with(|| stream::Stream::new(stream_id, false));
+            .get_or_create(stream_id, || stream::Stream::new(stream_id, false));
 
         // We need to get a fresh reference to the stream for each
         // iteration, to avoid borrowing `self` for the entire duration
@@ -1853,11 +1879,9 @@ impl Connection {
                 },
 
                 stream::State::QpackInstruction => {
-                    let mut d = [0; 4096];
-
                     // Read data from the stream and discard immediately.
                     loop {
-                        conn.stream_recv(stream_id, &mut d)?;
+                        conn.stream_recv(stream_id, &mut self.qpack_buf)?;
                     }
                 },
 
@@ -1918,6 +1942,7 @@ impl Connection {
                 qpack_max_table_capacity,
                 qpack_blocked_streams,
                 h3_datagram,
+                enable_webtransport,
                 raw,
                 ..
             } => {
@@ -1926,6 +1951,7 @@ impl Connection {
                     qpack_max_table_capacity,
                     qpack_blocked_streams,
                     h3_datagram,
+                    enable_webtransport,
                     raw,
                 };
 
@@ -3836,6 +3862,7 @@ mod tests {
             qpack_max_table_capacity: None,
             qpack_blocked_streams: None,
             h3_datagram: Some(1),
+            enable_webtransport: None,
             grease: None,
             raw: Default::default(),
         };

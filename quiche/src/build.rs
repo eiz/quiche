@@ -74,6 +74,8 @@ fn get_boringssl_cmake_config() -> cmake::Config {
 
     let mut boringssl_cmake = cmake::Config::new("deps/boringssl");
 
+    eprintln!["hi! {:?} {:?}", arch, os];
+
     // Add platform-specific parameters.
     match os.as_ref() {
         "android" => {
@@ -127,32 +129,40 @@ fn get_boringssl_cmake_config() -> cmake::Config {
             boringssl_cmake
         },
 
-        "linux" => match arch.as_ref() {
-            "aarch64" | "arm" => {
-                for (arm_arch, params) in CMAKE_PARAMS_ARM_LINUX {
-                    if *arm_arch == arch {
-                        for (name, value) in *params {
-                            boringssl_cmake.define(name, value);
+        "linux" => {
+            let arch = arch.as_ref();
+
+            boringssl_cmake.define("CMAKE_SYSTEM_NAME", "Linux");
+            boringssl_cmake.define("CMAKE_SYSTEM_VERSION", "1");
+            boringssl_cmake.define("CMAKE_SYSTEM_PROCESSOR", arch);
+
+            match arch {
+                "aarch64" | "arm" => {
+                    for (arm_arch, params) in CMAKE_PARAMS_ARM_LINUX {
+                        if *arm_arch == arch {
+                            for (name, value) in *params {
+                                boringssl_cmake.define(name, value);
+                            }
                         }
                     }
-                }
-                boringssl_cmake.define("CMAKE_SYSTEM_NAME", "Linux");
-                boringssl_cmake.define("CMAKE_SYSTEM_VERSION", "1");
 
-                boringssl_cmake
-            },
+                    boringssl_cmake
+                },
 
-            "x86" => {
-                boringssl_cmake.define(
-                    "CMAKE_TOOLCHAIN_FILE",
-                    pwd.join("deps/boringssl/src/util/32-bit-toolchain.cmake")
+                "x86" => {
+                    boringssl_cmake.define(
+                        "CMAKE_TOOLCHAIN_FILE",
+                        pwd.join(
+                            "deps/boringssl/src/util/32-bit-toolchain.cmake",
+                        )
                         .as_os_str(),
-                );
+                    );
 
-                boringssl_cmake
-            },
+                    boringssl_cmake
+                },
 
-            _ => boringssl_cmake,
+                _ => boringssl_cmake,
+            }
         },
 
         _ => {

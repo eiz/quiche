@@ -311,6 +311,7 @@ use qlog::events::EventImportance;
 use qlog::events::EventType;
 #[cfg(feature = "qlog")]
 use qlog::events::RawInfo;
+use smallvec::SmallVec;
 
 use std::cmp;
 use std::time;
@@ -321,6 +322,7 @@ use std::pin::Pin;
 use std::str::FromStr;
 
 use std::collections::VecDeque;
+use std::time::Instant;
 
 /// The current QUIC wire version.
 pub const PROTOCOL_VERSION: u32 = PROTOCOL_VERSION_V1;
@@ -593,6 +595,7 @@ pub struct Config {
 
     max_connection_window: u64,
     max_stream_window: u64,
+    dgram_free_list: BufferCache,
 }
 
 // See https://quicwg.org/base-drafts/rfc9000.html#section-15
@@ -632,6 +635,7 @@ impl Config {
 
             max_connection_window: MAX_CONNECTION_WINDOW,
             max_stream_window: stream::MAX_STREAM_WINDOW,
+            dgram_free_list: BufferCache::new(0, 0),
         })
     }
 
@@ -971,6 +975,10 @@ impl Config {
     pub fn set_max_stream_window(&mut self, v: u64) {
         self.max_stream_window = v;
     }
+
+    pub fn set_dgram_free_list(&mut self, v: BufferCache) {
+        self.dgram_free_list = v;
+    }
 }
 
 /// A QUIC connection.
@@ -1153,6 +1161,7 @@ pub struct Connection {
     /// DATAGRAM queues.
     dgram_recv_queue: dgram::DatagramQueue,
     dgram_send_queue: dgram::DatagramQueue,
+    dgram_free_list: BufferCache,
 
     /// Whether to emit DATAGRAM frames in the next packet.
     emit_dgram: bool,
@@ -1556,6 +1565,8 @@ impl Connection {
             dgram_send_queue: dgram::DatagramQueue::new(
                 config.dgram_send_max_queue_len,
             ),
+
+            dgram_free_list: config.dgram_free_list.clone(),
 
             emit_dgram: true,
         });
@@ -2445,7 +2456,9 @@ impl Connection {
     /// }
     /// # Ok::<(), quiche::Error>(())
     /// ```
-    pub fn send(&mut self, out: &mut [u8]) -> Result<(usize, SendInfo)> {
+    pub fn send(
+        &mut self, out: &mut [u8], now: Instant,
+    ) -> Result<(usize, SendInfo)> {
         if out.is_empty() {
             return Err(Error::BufferTooShort);
         }
@@ -2502,9 +2515,11 @@ impl Connection {
 
         // Generate coalesced packets.
         while left > 0 {
-            let (ty, written) = match self
-                .send_single(&mut out[done..done + left], has_initial)
-            {
+            let (ty, written) = match self.send_single(
+                &mut out[done..done + left],
+                has_initial,
+                now,
+            ) {
                 Ok(v) => v,
 
                 Err(Error::BufferTooShort) | Err(Error::Done) => break,
@@ -2561,10 +2576,8 @@ impl Connection {
     }
 
     fn send_single(
-        &mut self, out: &mut [u8], has_initial: bool,
+        &mut self, out: &mut [u8], has_initial: bool, now: Instant,
     ) -> Result<(packet::Type, usize)> {
-        let now = time::Instant::now();
-
         if out.is_empty() {
             return Err(Error::BufferTooShort);
         }
@@ -2740,7 +2753,7 @@ impl Connection {
             return Err(Error::Done);
         }
 
-        let mut frames: Vec<frame::Frame> = Vec::new();
+        let mut frames: SmallVec<[frame::Frame; 8]> = SmallVec::new();
 
         let mut ack_eliciting = false;
         let mut in_flight = false;
@@ -3151,6 +3164,8 @@ impl Connection {
                                     in_flight = true;
                                     dgram_emitted = true;
                                 }
+
+                                self.dgram_free_list.free(data);
                             },
 
                             None => continue,
@@ -4243,14 +4258,22 @@ impl Connection {
         let max_payload_len = match self.dgram_max_writable_len() {
             Some(v) => v,
 
-            None => return Err(Error::InvalidState),
+            None => {
+                self.dgram_free_list.free(buf);
+                return Err(Error::InvalidState);
+            },
         };
 
         if buf.len() > max_payload_len {
+            error!["buffer too short: {:?} > {:?}", buf.len(), max_payload_len];
+            self.dgram_free_list.free(buf);
             return Err(Error::BufferTooShort);
         }
 
-        self.dgram_send_queue.push(buf)?;
+        if let Err((e, buf)) = self.dgram_send_queue.try_push(buf) {
+            self.dgram_free_list.free(buf);
+            return Err(e);
+        }
 
         if self.dgram_send_queue.byte_size() > self.recovery.cwnd_available() {
             self.recovery.update_app_limited(false);
@@ -4371,12 +4394,47 @@ impl Connection {
         None
     }
 
+    /// Returns the amount of time until the next timeout event.
+    ///
+    /// Once the given duration has elapsed, the [`on_timeout()`] method should
+    /// be called. A timeout of `None` means that the timer should be disarmed.
+    ///
+    /// [`on_timeout()`]: struct.Connection.html#method.on_timeout
+    pub fn timeout_at(&self, now: Instant) -> Option<time::Duration> {
+        if self.is_closed() {
+            return None;
+        }
+
+        let timeout = if self.is_draining() {
+            // Draining timer takes precedence over all other timers. If it is
+            // set it means the connection is closing so there's no point in
+            // processing the other timers.
+            self.draining_timer
+        } else {
+            // Use the lowest timer value (i.e. "sooner") among idle and loss
+            // detection timers. If they are both unset (i.e. `None`) then the
+            // result is `None`, but if at least one of them is set then a
+            // `Some(...)` value is returned.
+            let timers = [self.idle_timer, self.recovery.loss_detection_timer()];
+
+            timers.iter().filter_map(|&x| x).min()
+        };
+
+        if let Some(timeout) = timeout {
+            if timeout <= now {
+                return Some(time::Duration::ZERO);
+            }
+
+            return Some(timeout.duration_since(now));
+        }
+
+        None
+    }
+
     /// Processes a timeout event.
     ///
     /// If no timeout has occurred it does nothing.
-    pub fn on_timeout(&mut self) {
-        let now = time::Instant::now();
-
+    pub fn on_timeout(&mut self, now: Instant) {
         if let Some(draining_timer) = self.draining_timer {
             if draining_timer <= now {
                 trace!("{} draining timeout expired", self.trace_id);
@@ -6169,7 +6227,7 @@ pub mod testing {
 
         let mut off = 0;
 
-        match conn.send(&mut buf[off..]) {
+        match conn.send(&mut buf[off..], Instant::now()) {
             Ok((write, _)) => off += write,
 
             Err(Error::Done) => (),
@@ -6200,7 +6258,7 @@ pub mod testing {
         loop {
             let mut out = vec![0u8; 65535];
 
-            match conn.send(&mut out) {
+            match conn.send(&mut out, Instant::now()) {
                 Ok((written, _)) => out.truncate(written),
 
                 Err(Error::Done) => break,
@@ -11141,6 +11199,7 @@ mod tests {
     }
 }
 
+use crate::buffer_cache::BufferCache;
 pub use crate::packet::ConnectionId;
 pub use crate::packet::Header;
 pub use crate::packet::Type;
@@ -11149,6 +11208,7 @@ pub use crate::recovery::CongestionControlAlgorithm;
 
 pub use crate::stream::StreamIter;
 
+pub mod buffer_cache;
 mod crypto;
 mod dgram;
 #[cfg(feature = "ffi")]
@@ -11162,5 +11222,6 @@ mod packet;
 mod rand;
 mod ranges;
 mod recovery;
+pub mod shitty_map;
 mod stream;
 mod tls;
